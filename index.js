@@ -6,6 +6,7 @@ const { Server } = require("socket.io");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const path = require("path");
+const bcrypt = require("bcrypt");
 
 const app = express();
 const server = http.createServer(app);
@@ -44,6 +45,60 @@ async function findOrCreateUser(ip) {
 
 io.on("connection", (socket) => {
   console.log("▶", socket.id, "connected");
+
+  // admin login
+
+  socket.on("loginAdmin", async ({ username, password }, callback) => {
+    try {
+      // 1) find admin
+      const admin = await Admin.findOne({ username });
+      if (!admin) {
+        return callback({ success: false, message: "Invalid credentials" });
+      }
+
+      // 2) check password (your model method)
+      const ok = await admin.checkPassword(password);
+      if (!ok) {
+        return callback({ success: false, message: "Invalid credentials" });
+      }
+
+      // 3) make a safe payload (no password)
+      const userPayload = {
+        id: admin._id.toString(),
+        username: admin.username,
+        role: admin.role || "admin",
+        tokenVersion: admin.tokenVersion ?? 0,
+      };
+
+      // 4) create token from safe payload
+      const token = generateTokenFor(userPayload); // your JWT/sign fn
+
+      return callback({ success: true, token, admin: userPayload });
+    } catch (err) {
+      console.error("loginAdmin error:", err);
+      return callback({ success: false, message: "Server error" });
+    }
+  });
+
+  socket.on("verifyAdminToken", async ({ token }, cb) => {
+    try {
+      const payload = verifyToken(token); // your JWT verify
+      // optional: check tokenVersion from DB
+      const admin = await Admin.findById(payload.userId);
+      if (!admin) return cb({ valid: false });
+
+      if (
+        typeof payload.tokenVersion === "number" &&
+        admin.tokenVersion !== payload.tokenVersion
+      ) {
+        return cb({ valid: false });
+      }
+
+      cb({ valid: true });
+    } catch (e) {
+      cb({ valid: false });
+    }
+  });
 
   /// index.js
 

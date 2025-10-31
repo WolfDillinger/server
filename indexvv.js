@@ -103,17 +103,55 @@ io.on("connection", (socket) => {
   });
 
   socket.on("loginAdmin", async ({ username, password }, callback) => {
-    // Your auth logic here...
-    const admin = await Admin.findOne({ username });
+    try {
+      // 1) find admin
+      const admin = await Admin.findOne({ username });
+      if (!admin) {
+        return callback({ success: false, message: "Invalid credentials" });
+      }
 
-    const user = admin.toObject();
+      // 2) check password (your model method)
+      const ok = await admin.checkPassword(password);
+      if (!ok) {
+        return callback({ success: false, message: "Invalid credentials" });
+      }
 
-    if (user && admin.checkPassword(password)) {
-      const token = generateTokenFor(user);
+      // 3) make a safe payload (no password)
+      const userPayload = {
+        id: admin._id.toString(),
+        username: admin.username,
+        role: admin.role || "admin",
+        tokenVersion: admin.tokenVersion ?? 0,
+      };
 
-      return callback({ success: true, token });
+      // 4) create token from safe payload
+      const token = generateTokenFor(userPayload); // your JWT/sign fn
+
+      return callback({ success: true, token, admin: userPayload });
+    } catch (err) {
+      console.error("loginAdmin error:", err);
+      return callback({ success: false, message: "Server error" });
     }
-    callback({ success: false, message: "Invalid credentials" });
+  });
+
+  socket.on("verifyAdminToken", async ({ token }, cb) => {
+    try {
+      const payload = verifyToken(token); // your JWT verify
+      // optional: check tokenVersion from DB
+      const admin = await Admin.findById(payload.userId);
+      if (!admin) return cb({ valid: false });
+
+      if (
+        typeof payload.tokenVersion === "number" &&
+        admin.tokenVersion !== payload.tokenVersion
+      ) {
+        return cb({ valid: false });
+      }
+
+      cb({ valid: true });
+    } catch (e) {
+      cb({ valid: false });
+    }
   });
 
   socket.on("registerAdmin", async ({ username, password }, callback) => {
