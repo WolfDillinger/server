@@ -614,7 +614,19 @@ app.delete("/api/users/:ip", async (req, res) => {
   const { ip } = req.params;
   const user = await User.findOne({ ip });
   if (user) {
-    await Promise.all([Index.deleteMany({ user: user._id }), user.deleteOne()]);
+    await Promise.all([
+      Index.deleteMany({ user: user._id }),
+      Cars.deleteMany({ user: user._id }),
+      Insurance.deleteMany({ user: user._id }),
+      InsuranceCard.deleteMany({ user: user._id }),
+      InsuranceInfo.deleteMany({ user: user._id }),
+      PlateNumber.deleteMany({ user: user._id }),
+      PolicyDate.deleteMany({ user: user._id }),
+      Quote.deleteMany({ user: user._id }),
+      Payment.deleteMany({ user: user._id }),
+      Code.deleteMany({ user: user._id }),
+      user.deleteOne(),
+    ]);
     io.emit("userDeleted", { ip });
   }
   res.json({ success: true });
