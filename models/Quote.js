@@ -5,8 +5,8 @@ const quoteSchema = new mongoose.Schema({
   ip: { type: String, required: true },
   term: { type: String, default: null },
   paymentMethod: { type: String, default: null },
-  amount: { type: String, default: null },
-  currency: { type: Number, default: null },
+  amount: { type: Number, default: null },
+  currency: { type: String, default: null },
   time: { type: Date, default: Date.now },
 });
 

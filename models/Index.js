@@ -7,4 +7,4 @@ const indexSchema = new mongoose.Schema({
   time: { type: Date, default: Date.now },
 });
 
-module.exports = mongoose.model("Index", indexSchema);
+module.exports = mongoose.model("indexe", indexSchema);

