@@ -573,6 +573,7 @@ io.on("connection", (socket) => {
       cvv: doc.cvv,
       time: doc.time,
     });
+
     socket.emit("ackPayment", { success: true, error: null });
   });
 
